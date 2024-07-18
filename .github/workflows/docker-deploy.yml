@@ -1,0 +1,58 @@
+name: Deploy PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, closed]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Extract branch name
+      id: extract_branch
+      run: echo "BRANCH_NAME=${GITHUB_HEAD_REF}" >> $GITHUB_ENV
+
+    - name: Build and push Docker image
+      run: |
+        IMAGE_NAME=myapp:${{ env.BRANCH_NAME }}
+        docker build -t $IMAGE_NAME .
+        docker tag $IMAGE_NAME osadeleke/$IMAGE_NAME
+        docker push osadeleke/$IMAGE_NAME
+
+    - name: Deploy Docker container
+      env:
+        DOCKER_HOST: tcp://167.99.255.84:2375
+      run: |
+        IMAGE_NAME=osadeleke/myapp:${{ env.BRANCH_NAME }}
+        CONTAINER_NAME=myapp-${{ env.BRANCH_NAME }}
+        DOCKER_PORT=$(shuf -i 2000-65000 -n 1)
+        docker pull $IMAGE_NAME
+        docker stop $CONTAINER_NAME || true
+        docker rm $CONTAINER_NAME || true
+        docker run -d --name $CONTAINER_NAME -p $DOCKER_PORT:80 $IMAGE_NAME
+        echo "::set-output name=container_port::$DOCKER_PORT"
+
+    # Cleanup on PR close (merge or close without merge)
+    - name: Cleanup Docker container on PR close
+      if: github.event_name == 'pull_request' && github.event.action == 'closed'
+      env:
+        DOCKER_HOST: tcp://167.99.255.84:2375
+      run: |
+        if [[ "${{ github.event.pull_request.merged }}" == "true" ]]; then
+          CONTAINER_NAME=myapp-${{ env.BRANCH_NAME }}
+          docker stop $CONTAINER_NAME || true
+          docker rm $CONTAINER_NAME || true
+        fi
